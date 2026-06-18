@@ -42,7 +42,7 @@ source venv/bin/activate
 # 安装必要的库
 pip install flask pymysql
 ```
-
+```bash
 DB_CONFIG = {
     'host': '127.0.0.1',
     'port': 3306,
@@ -52,3 +52,4 @@ DB_CONFIG = {
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor
 }
+```
