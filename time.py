@@ -1,3 +1,7 @@
+import os
+import re
+from urllib.parse import quote, urlsplit
+
 from flask import Flask, render_template, jsonify
 import pymysql
 import requests
@@ -6,11 +10,11 @@ app = Flask(__name__)
 
 # ================= 数据库配置区 =================
 DB_CONFIG = {
-    'host': '192.168.1.1',
-    'port': 3306,
-    'user': 'root',
-    'password': '123456@2026',
-    'database': 'subscription_db',
+    'host': os.getenv('DB_HOST', '127.0.0.1'),
+    'port': int(os.getenv('DB_PORT', '3306')),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', '123456'),
+    'database': os.getenv('DB_NAME', 'subscription_db'),
     'charset': 'utf8mb4',
     'cursorclass': pymysql.cursors.DictCursor
 }
@@ -24,6 +28,66 @@ def format_size(bytes_val):
     if bytes_val < 1024 ** 3:
         return f"{bytes_val / 1024 ** 2:.2f} MB"
     return f"{bytes_val / 1024 ** 3:.2f} GB"
+
+
+def split_host_port(value):
+    value = (value or '').strip()
+    if not value or value in ('-', '未知', '无'):
+        return None, None
+
+    try:
+        parsed = urlsplit(value if '://' in value else f'//{value}')
+    except ValueError:
+        return None, None
+
+    host = parsed.hostname
+    if not host:
+        return None, None
+
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    return host, port
+
+
+def iter_check_targets(value):
+    value = (value or '').strip()
+    if not value or value in ('-', '未知', '无'):
+        return
+
+    parts = re.split(r'[\s,;/|]+', value)
+    for part in parts:
+        part = part.strip()
+        if not part or part in ('-', '未知', '无'):
+            continue
+
+        host, port = split_host_port(part)
+        if not host:
+            continue
+
+        # Skip location names such as "美国"; ping.pe needs a domain or IP.
+        if not re.search(r'[A-Za-z0-9]', host):
+            continue
+
+        yield host, port
+
+
+def build_ping_pe_check(row):
+    for field in ('relay_address', 'ip_address', 'link_url'):
+        for host, port in iter_check_targets(row.get(field)):
+            result = {
+                'target': host,
+                'ping_url': f"https://ping.pe/{quote(host, safe='')}",
+                'tcp_url': None
+            }
+            if port:
+                tcp_target = f"{host}:{port}"
+                result['target'] = tcp_target
+                result['tcp_url'] = f"https://tcp.ping.pe/{quote(tcp_target, safe='')}"
+            return result
+    return None
 
 
 def fetch_node_traffic(row):
@@ -124,6 +188,8 @@ def index():
             sql = "SELECT * FROM resource_management ORDER BY id ASC"
             cursor.execute(sql)
             data = cursor.fetchall()
+            for row in data:
+                row['gfw_check'] = build_ping_pe_check(row)
         return render_template('index.html', data=data)
     except pymysql.MySQLError as e:
         return f"<h2 style='color:red;'>数据库连接失败！</h2><p>错误信息: {e}</p>"
@@ -160,6 +226,31 @@ def get_node_traffic(node_id):
 
     except Exception as e:
         return jsonify({'success': False, 'message': f'查询失败: {str(e)}'})
+    finally:
+        if connection:
+            connection.close()
+
+
+@app.route('/api/gfw/<int:node_id>')
+def get_gfw_check(node_id):
+    connection = None
+    try:
+        connection = get_db_connection()
+        with connection.cursor() as cursor:
+            sql = "SELECT * FROM resource_management WHERE id = %s"
+            cursor.execute(sql, (node_id,))
+            row = cursor.fetchone()
+
+        if not row:
+            return jsonify({'success': False, 'message': '节点不存在'})
+
+        check = build_ping_pe_check(row)
+        if not check:
+            return jsonify({'success': False, 'message': '没有可检测的域名或IP'})
+
+        return jsonify({'success': True, **check})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'GFW检测失败: {str(e)}'})
     finally:
         if connection:
             connection.close()
