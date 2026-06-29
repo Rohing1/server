@@ -33,21 +33,19 @@
             font-size: 0.9em;
             color: #d63384;
         }
-        .table-img {
-            max-width: 80px;
-            max-height: 60px;
-            object-fit: cover;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        .table-img:hover {
-            transform: scale(1.1);
+        .gfw-target {
+            display: block;
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin: 0 auto 4px;
         }
     </style>
 </head>
 <body>
     <div class="container-fluid px-4">
-        <h2 class="mb-4 text-center">📊 资源管理动态面板</h2>
+        <h2 class="mb-4 text-center">资源管理动态面板</h2>
 
         <div class="table-container">
             <div class="table-responsive">
@@ -57,12 +55,13 @@
                             <th>ID</th>
                             <th>项目</th>
                             <th>团队</th>
-                            <th>名称</th>
+                            <th>到期时间</th>
                             <th>价格(CNY)</th>
                             <th>价格(USD)</th>
                             <th>流量/月</th>
                             <th>节点地址</th>
                             <th>IP</th>
+                            <th class="text-center">GFW Check</th>
                             <th>中转</th>
                             <th>供应商</th>
                             <th>套餐名称</th>
@@ -83,39 +82,46 @@
                                 <td>{{ row.traffic_limit or '-' }}</td>
                                 <td>{{ row.server_location or '-' }}</td>
                                 <td>{% if row.ip_address %}<span class="code-tag">{{ row.ip_address }}</span>{% else %}-{% endif %}</td>
+                                <td class="text-center">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-warning"
+                                            onclick='openGfwCheck({{ row.relay_address|tojson }}, {{ row.ip_address|tojson }}, {{ row.link_url|tojson }})'
+                                            id="btn-gfw-{{ row.id }}">
+                                        查询GFW
+                                    </button>
+                                    <div id="gfw-result-{{ row.id }}" class="small text-muted mt-1"></div>
+                                </td>
                                 <td>{% if row.relay_address %}<span class="code-tag">{{ row.relay_address }}</span>{% else %}-{% endif %}</td>
                                 <td>{{ row.provider or '-' }}</td>
                                 <td>{{ row.package_name or '-' }}</td>
 
-                                <!-- 实时流量查询列 -->
                                 <td class="text-center">
                                     <button type="button" class="btn btn-sm btn-outline-success"
                                             onclick="queryTraffic({{ row.id }})"
                                             id="btn-traffic-{{ row.id }}">
-                                        📊 查询流量
+                                        查询流量
                                     </button>
                                     <div id="traffic-result-{{ row.id }}" style="display:none; margin-top:5px;">
                                         <div class="small text-muted">
-                                            👥 <span id="user-count-{{ row.id }}">-</span> 用户
+                                            <span id="user-count-{{ row.id }}">-</span> 用户
                                         </div>
                                         <div class="fw-bold text-success" id="total-traffic-{{ row.id }}">-</div>
                                         <button type="button" class="btn btn-sm btn-outline-info mt-1 py-0 px-2"
                                                 onclick="showDetail({{ row.id }})"
                                                 style="display:none;"
                                                 id="btn-detail-{{ row.id }}">
-                                            🔍 详情
+                                            详情
                                         </button>
                                     </div>
                                 </td>
 
-                                <!-- 链接列 -->
                                 <td class="text-center">
                                     {% if row.link_url %}
                                         <a href="{{ row.link_url }}"
                                            target="_blank"
                                            rel="noopener noreferrer"
                                            class="btn btn-sm btn-outline-primary text-decoration-none">
-                                            🔗 访问
+                                            访问
                                         </a>
                                     {% else %}
                                         -
@@ -125,8 +131,8 @@
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="14" class="text-center text-muted py-4">
-                                    ⚠️ 暂无数据 (请确认数据库表中是否有数据)
+                                <td colspan="15" class="text-center text-muted py-4">
+                                    暂无数据（请确认数据库表中是否有数据）
                                 </td>
                             </tr>
                         {% endif %}
@@ -140,57 +146,85 @@
         </p>
     </div>
 
-    <!-- 引入 Bootstrap 5 JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
-    <!-- JavaScript 代码 -->
     <script>
-        // 存储所有节点的流量数据
         var trafficData = {};
 
-        // 查询流量函数
+        function splitHostPort(value) {
+            value = (value || '').trim();
+            if (!value || value === '-' || value === '未知' || value === '无') {
+                return null;
+            }
+
+            var parts = value.split(/[\s,;\/|]+/);
+            for (var i = 0; i < parts.length; i++) {
+                var part = parts[i].trim();
+                if (!part || part === '-' || part === '未知' || part === '无') {
+                    continue;
+                }
+
+                try {
+                    var parsed = new URL(part.indexOf('://') >= 0 ? part : 'http://' + part);
+                    if (parsed.hostname && /[A-Za-z0-9]/.test(parsed.hostname)) {
+                        return {
+                            host: parsed.hostname,
+                            port: parsed.port || ''
+                        };
+                    }
+                } catch (error) {
+                    continue;
+                }
+            }
+            return null;
+        }
+
+        function openGfwCheck(relayAddress, ipAddress, linkUrl) {
+            var target = splitHostPort(relayAddress) || splitHostPort(ipAddress) || splitHostPort(linkUrl);
+            if (!target) {
+                alert('没有可检测的域名或IP');
+                return;
+            }
+
+            var checkValue = target.port ? target.host + ':' + target.port : target.host;
+            var url = target.port
+                ? 'https://tcp.ping.pe/' + encodeURIComponent(checkValue)
+                : 'https://ping.pe/' + encodeURIComponent(checkValue);
+            window.open(url, '_blank', 'noopener,noreferrer');
+        }
+
         function queryTraffic(nodeId) {
             var btn = document.getElementById('btn-traffic-' + nodeId);
             var resultDiv = document.getElementById('traffic-result-' + nodeId);
 
-            // 显示加载状态
-            btn.innerHTML = '⏳ 加载中...';
+            btn.innerHTML = '加载中...';
             btn.disabled = true;
             btn.classList.remove('btn-outline-success');
             btn.classList.add('btn-outline-secondary');
 
-            // 发送 AJAX 请求到后端 API
             fetch('/api/traffic/' + nodeId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        // 保存数据
                         trafficData[nodeId] = data;
 
-                        // 显示结果
                         document.getElementById('user-count-' + nodeId).textContent = data.user_count;
-                        document.getElementById('total-traffic-' + nodeId).textContent = '📊 ' + data.summary.total_all;
-
-                        // 显示详情按钮
+                        document.getElementById('total-traffic-' + nodeId).textContent = data.summary.total_all;
                         document.getElementById('btn-detail-' + nodeId).style.display = 'inline-block';
-
-                        // 显示结果区域
                         resultDiv.style.display = 'block';
 
-                        // 改变按钮样式
-                        btn.innerHTML = '🔄 刷新';
+                        btn.innerHTML = '刷新';
                         btn.classList.remove('btn-outline-secondary');
                         btn.classList.add('btn-outline-primary');
                         btn.disabled = false;
                     } else {
-                        // 显示错误
-                        btn.innerHTML = '❌ 失败';
+                        btn.innerHTML = '失败';
                         btn.title = data.message || '查询失败';
                         btn.classList.remove('btn-outline-secondary');
                         btn.classList.add('btn-danger');
 
                         setTimeout(function() {
-                            btn.innerHTML = '📊 重试';
+                            btn.innerHTML = '重试';
                             btn.disabled = false;
                             btn.classList.remove('btn-danger');
                             btn.classList.add('btn-outline-success');
@@ -199,13 +233,13 @@
                 })
                 .catch(error => {
                     console.error('Error:', error);
-                    btn.innerHTML = '❌ 错误';
+                    btn.innerHTML = '错误';
                     btn.title = '网络错误';
                     btn.classList.remove('btn-outline-secondary');
                     btn.classList.add('btn-danger');
 
                     setTimeout(function() {
-                        btn.innerHTML = '📊 重试';
+                        btn.innerHTML = '重试';
                         btn.disabled = false;
                         btn.classList.remove('btn-danger');
                         btn.classList.add('btn-outline-success');
@@ -213,7 +247,6 @@
                 });
         }
 
-        // 显示详情弹窗
         function showDetail(nodeId) {
             var data = trafficData[nodeId];
             if (!data || !data.users) {
@@ -221,7 +254,6 @@
                 return;
             }
 
-            // 构建详情表格HTML
             var usersHtml = '';
             if (data.users.length === 0) {
                 usersHtml = '<tr><td colspan="5" class="text-center text-muted py-3">暂无用户数据</td></tr>';
@@ -239,7 +271,6 @@
                 });
             }
 
-            // 创建弹窗
             var modalHtml = `
                 <div class="modal fade" id="modalDetail${nodeId}" tabindex="-1" aria-hidden="true">
                     <div class="modal-dialog modal-lg modal-dialog-centered">
@@ -258,9 +289,9 @@
                                             <tr>
                                                 <th width="5%">#</th>
                                                 <th width="40%">用户标识 (Email)</th>
-                                                <th class="text-center" width="15%">⬆️ 上传</th>
-                                                <th class="text-center" width="15%">⬇️ 下载</th>
-                                                <th class="text-center" width="25%">📊 总计</th>
+                                                <th class="text-center" width="15%">上传</th>
+                                                <th class="text-center" width="15%">下载</th>
+                                                <th class="text-center" width="25%">总计</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -277,7 +308,6 @@
                 </div>
             `;
 
-            // 添加到页面并显示
             var tempDiv = document.createElement('div');
             tempDiv.innerHTML = modalHtml;
             document.body.appendChild(tempDiv.firstElementChild);
@@ -285,7 +315,6 @@
             var modal = new bootstrap.Modal(document.getElementById('modalDetail' + nodeId));
             modal.show();
 
-            // 弹窗关闭后删除
             document.getElementById('modalDetail' + nodeId).addEventListener('hidden.bs.modal', function() {
                 this.remove();
             });
